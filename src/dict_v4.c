@@ -253,6 +253,71 @@ static int conflict_lookup(const struct dict_v4 *d, uint32_t slot, uint32_t *str
     return -ENOENT;
 }
 
+/* Exact membership is checked locally before any remote lookup or retrace.
+ * Like the string decoder, this scratch buffer is used by serialized lookups. */
+static uint8_t key_block_buffer[DICT_V4_KEY_BLOCK_BYTES];
+
+static int compare_outline(const uint8_t *a, size_t a_len,
+                           const uint8_t *b, size_t b_len)
+{
+    int comparison = memcmp(a, b, a_len < b_len ? a_len : b_len);
+    if (comparison != 0) {
+        return comparison;
+    }
+    return (a_len > b_len) - (a_len < b_len);
+}
+
+static int exact_outline_contains(const struct dict_v4 *d,
+                                  const uint8_t *key, size_t key_len)
+{
+    uint32_t lo = 0, hi = d->key_block_count;
+    while (lo < hi) {
+        uint32_t mid = lo + (hi - lo) / 2;
+        const uint8_t *block = d->keys + get_le32(d->keys + mid * 4);
+        if (compare_outline(block + 1, block[0], key, key_len) <= 0) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    if (lo == 0) {
+        return 0;
+    }
+    uint32_t start = get_le32(d->keys + (lo - 1) * 4);
+    uint32_t end = get_le32(d->keys + lo * 4);
+    const uint8_t *block = d->keys + start;
+    size_t header_len = 1u + block[0];
+    int decoded = steno_inflate(block + header_len, end - start - header_len,
+                               key_block_buffer, sizeof(key_block_buffer));
+    if (decoded < 0) {
+        return -EBADMSG;
+    }
+    uint8_t outline[DICT_V4_MAX_KEY_STROKES * 4];
+    size_t outline_len = 0, position = 0;
+    while (position < (size_t)decoded) {
+        if ((size_t)decoded - position < 2) {
+            return -EBADMSG;
+        }
+        uint8_t prefix = key_block_buffer[position++];
+        uint8_t suffix = key_block_buffer[position++];
+        if (prefix > outline_len || (size_t)prefix + suffix > sizeof(outline) ||
+            suffix > (size_t)decoded - position) {
+            return -EBADMSG;
+        }
+        memcpy(outline + prefix, key_block_buffer + position, suffix);
+        outline_len = (size_t)prefix + suffix;
+        position += suffix;
+        int comparison = compare_outline(outline, outline_len, key, key_len);
+        if (comparison == 0) {
+            return 1;
+        }
+        if (comparison > 0) {
+            return 0;
+        }
+    }
+    return 0;
+}
+
 /* ─── Init ─── */
 
 static int init_disp(struct dict_v4 *d, const uint8_t *sec, uint32_t sec_len)
@@ -376,6 +441,35 @@ int dict_v4_init(struct dict_v4 *d, const void *blob, size_t len)
             break;
         }
 
+        case DICT_V4_SEC_KEYS: {
+            uint32_t blocks = ent->param;
+            if (blocks == 0 || blocks > hdr->n ||
+                (uint64_t)(blocks + 1) * 4 > sec_len) {
+                return -EBADMSG;
+            }
+            uint32_t previous = get_le32(sec);
+            if (previous != (blocks + 1) * 4) {
+                return -EBADMSG;
+            }
+            for (uint32_t block = 0; block < blocks; block++) {
+                uint32_t end = get_le32(sec + (block + 1) * 4);
+                if (end <= previous || end > sec_len ||
+                    sec[previous] == 0 || sec[previous] % 4 != 0 ||
+                    sec[previous] > DICT_V4_MAX_KEY_STROKES * 4 ||
+                    1u + sec[previous] >= end - previous) {
+                    return -EBADMSG;
+                }
+                previous = end;
+            }
+            if (previous != sec_len) {
+                return -EBADMSG;
+            }
+            d->keys = sec;
+            d->keys_len = sec_len;
+            d->key_block_count = blocks;
+            break;
+        }
+
         case DICT_V4_SEC_STRINGS:
             d->strings = sec;
             d->strings_len = sec_len;
@@ -398,7 +492,7 @@ int dict_v4_lookup(const struct dict_v4 *d, const uint32_t *strokes, uint8_t cou
     if (!d || !d->header || !strokes || count == 0 || !slot || active_dict > 1) {
         return -EINVAL;
     }
-    if (!d->disp_code_len || !d->membership || !d->fp || !d->validx) {
+    if (!d->disp_code_len || !d->membership || !d->fp || !d->validx || !d->keys) {
         return -ENOTSUP;    /* this half lacks the decision sections */
     }
 
@@ -447,6 +541,11 @@ int dict_v4_lookup(const struct dict_v4 *d, const uint32_t *strokes, uint8_t cou
     uint32_t m = read_bits_lsb(d->membership, s * 2, 2);
     if (!(m & (1u << active_dict))) {
         return DICT_V4_MISS;
+    }
+
+    ret = exact_outline_contains(d, key_buf, key_len);
+    if (ret <= 0) {
+        return ret; /* zero = MISS; malformed blocks fail closed */
     }
 
     *slot = s;

@@ -8,6 +8,14 @@ target_include_directories(app PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
+# Keep module warnings visible as build failures on either keyboard half.
+set_source_files_properties(
+    src/behavior_steno.c src/output.c src/formatter.c src/undo.c
+    src/dict_v4.c src/inflate.c src/split_dict.c src/split_cache.c
+    TARGET_DIRECTORY app
+    PROPERTIES COMPILE_OPTIONS "-Werror"
+)
+
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 set(STENO_DICTS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/dicts)

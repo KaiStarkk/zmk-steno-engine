@@ -146,6 +146,7 @@ static void tap_key(uint8_t keycode, bool shift)
     }
 }
 
+#if IS_ENABLED(CONFIG_STENO_UNICODE_MODE_LINUX) || IS_ENABLED(CONFIG_STENO_UNICODE_MODE_MACOS)
 static void press_key(uint8_t keycode)
 {
     raise_zmk_keycode_state_changed((struct zmk_keycode_state_changed){
@@ -162,6 +163,9 @@ static void release_key(uint8_t keycode)
         .state = false, .timestamp = k_uptime_get()});
 }
 
+#endif
+
+#if !IS_ENABLED(CONFIG_STENO_UNICODE_MODE_NONE)
 /* Map hex digit (0-15) to HID keycode */
 static uint8_t hex_to_hid(uint8_t nib)
 {
@@ -174,6 +178,9 @@ static uint8_t hex_to_hid(uint8_t nib)
     return 0x04 + (nib - 10); /* 'a'-'f': 0x04-0x09 */
 }
 
+#endif
+
+#if IS_ENABLED(CONFIG_STENO_UNICODE_MODE_LINUX) || IS_ENABLED(CONFIG_STENO_UNICODE_MODE_WINC)
 /* Tap hex digits of codepoint (variable width, skip leading zeros) */
 static void tap_hex_digits(uint32_t codepoint)
 {
@@ -197,6 +204,8 @@ static void tap_hex_digits(uint32_t codepoint)
         tap_key(hex_to_hid(buf[i]), false);
     }
 }
+
+#endif
 
 void steno_output_unicode(uint32_t codepoint)
 {

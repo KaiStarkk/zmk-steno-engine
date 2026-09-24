@@ -16,8 +16,7 @@
  * then drives the real split decision path: every lookup runs on the
  * LEFT context; the string is fetched from the RIGHT context via
  * string_by_id (FOUND_LOCAL) or resolve_slot (FOUND_REMOTE) and
- * compared byte-exact. Unknown keys must MISS, modulo the 4-bit
- * fingerprint false-accept rate (asserted < 10%).
+ * compared byte-exact. Unknown keys must MISS, including fingerprint collisions.
  *
  *   test_dict_v4 <left.bin> <right.bin> <vectors.bin>
  *
@@ -35,7 +34,6 @@
 
 #define VECTORS_MAGIC 0x56543456u
 #define MAX_MISMATCH_PRINT 10
-#define FALSE_ACCEPT_LIMIT_PCT 10.0
 
 static uint8_t *load_file(const char *path, size_t *len_out)
 {
@@ -214,8 +212,7 @@ int main(int argc, char **argv)
         } else {
             unknown_checked++;
             if (ret == DICT_V4_FOUND_LOCAL || ret == DICT_V4_FOUND_REMOTE) {
-                /* Fingerprint false accept: string fetch must still
-                 * succeed (no crash, valid id), the text is garbage. */
+                /* Any accepted absent outline is a regression. */
                 false_accepts++;
                 if (text_len < 0) {
                     mismatches++;
@@ -252,9 +249,8 @@ int main(int argc, char **argv)
         printf("FAIL: %u mismatches\n", mismatches);
         return 1;
     }
-    if (fa_pct >= FALSE_ACCEPT_LIMIT_PCT) {
-        printf("FAIL: false-accept rate %.2f%% >= %.1f%%\n",
-               fa_pct, FALSE_ACCEPT_LIMIT_PCT);
+    if (false_accepts != 0) {
+        printf("FAIL: %u unknown outlines accepted\n", false_accepts);
         return 1;
     }
 

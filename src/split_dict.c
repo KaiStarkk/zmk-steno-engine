@@ -222,6 +222,7 @@ static ssize_t dict_req_write_cb(struct bt_conn *conn,
 
 /* --- Notification callback (central side) --- */
 
+#if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
 static uint8_t notify_cb(struct bt_conn *conn,
                          struct bt_gatt_subscribe_params *params,
                          const void *data, uint16_t length)
@@ -250,6 +251,8 @@ static uint8_t notify_cb(struct bt_conn *conn,
     return BT_GATT_ITER_CONTINUE;
 }
 
+#endif /* CONFIG_ZMK_SPLIT_ROLE_CENTRAL */
+
 /* --- GATT Service Definition --- */
 
 #ifdef STENO_DICT_PERIPHERAL
@@ -271,18 +274,18 @@ BT_GATT_SERVICE_DEFINE(steno_dict_svc,
 
 static struct bt_conn *split_conn;
 static uint16_t req_value_handle;
-static struct bt_gatt_subscribe_params subscribe_params;
-
 #if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+
+static struct bt_gatt_subscribe_params subscribe_params;
 
 static struct bt_gatt_discover_params discover_params;
 
 /* Static UUID storage: discovery is asynchronous, the filter UUID must
  * outlive the initiating call. */
 static struct bt_uuid_128 uuid_steno_svc = BT_UUID_INIT_128(BT_UUID_128_ENCODE(
-    0x7374656e, 0x6f00, 0x4000, 0x8000, 0x000000000001));
+    0x7374656e, 0x6f00, 0x4000, 0x8000, 0x000000000001ULL));
 static struct bt_uuid_128 uuid_steno_req = BT_UUID_INIT_128(BT_UUID_128_ENCODE(
-    0x7374656e, 0x6f00, 0x4000, 0x8000, 0x000000000002));
+    0x7374656e, 0x6f00, 0x4000, 0x8000, 0x000000000002ULL));
 
 static uint8_t discover_func(struct bt_conn *conn,
                              const struct bt_gatt_attr *attr,

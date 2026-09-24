@@ -24,6 +24,7 @@ Entries never get trimmed. Anything that does not fit is a hard error.
 """
 
 import argparse
+import bisect
 import heapq
 import json
 import math
@@ -42,7 +43,7 @@ except ImportError:
 # ─── Format constants (FORMAT_V4.md) ───
 
 MAGIC = 0x344E5453          # "STN4"
-VERSION = 4
+VERSION = 5
 D_THRESHOLD = 32768
 SINGLETON_TRIES = 1000
 FP_BITS = 4
@@ -63,6 +64,9 @@ SEC_CONFLICTS = 4
 SEC_FP = 5
 SEC_STRDIR = 6
 SEC_STRINGS = 7
+SEC_KEYS = 8
+KEY_BLOCK_ENTRIES = 256
+KEY_BLOCK_BYTES = 4096
 
 SEC_NAMES = {
     SEC_DISP: 'DISP',
@@ -72,6 +76,7 @@ SEC_NAMES = {
     SEC_FP: 'FP',
     SEC_STRDIR: 'STRDIR',
     SEC_STRINGS: 'STRINGS',
+    SEC_KEYS: 'KEYS',
 }
 
 FNV_PRIME = 0x01000193
@@ -843,6 +848,63 @@ class StringTable:
 
 # ─── Blob assembly ───
 
+def build_key_section(keys):
+    """Exact membership: sorted, front-coded outlines in raw-DEFLATE blocks."""
+    keys = sorted(keys)
+    blocks = []
+    for start in range(0, len(keys), KEY_BLOCK_ENTRIES):
+        outlines = keys[start:start + KEY_BLOCK_ENTRIES]
+        raw = bytearray()
+        previous = b''
+        for key in outlines:
+            prefix = common_prefix_len(previous, key)
+            raw.extend(bytes((prefix, len(key) - prefix)) + key[prefix:])
+            previous = key
+        if len(raw) > KEY_BLOCK_BYTES:
+            raise ValueError(f"Outline block exceeds {KEY_BLOCK_BYTES} bytes")
+        first = outlines[0]
+        blocks.append(bytes((len(first),)) + first +
+                      zlib.compress(raw, level=9, wbits=-15))
+    offsets = [(len(blocks) + 1) * 4]
+    for block in blocks:
+        offsets.append(offsets[-1] + len(block))
+    return struct.pack('<' + 'I' * len(offsets), *offsets) + b''.join(blocks), len(blocks)
+
+
+class ExactKeyTable:
+    def __init__(self, section, block_count):
+        offsets = struct.unpack_from('<' + 'I' * (block_count + 1), section)
+        self.blocks = [section[offsets[i]:offsets[i + 1]]
+                       for i in range(block_count)]
+        self.first_keys = [block[1:1 + block[0]] for block in self.blocks]
+        self.cached_index = -1
+        self.cached_keys = set()
+
+    def contains(self, key):
+        index = bisect.bisect_right(self.first_keys, key) - 1
+        if index < 0:
+            return False
+        if index != self.cached_index:
+            block = self.blocks[index]
+            raw = zlib.decompress(block[1 + block[0]:], wbits=-15)
+            if len(raw) > KEY_BLOCK_BYTES:
+                raise ValueError("Oversized outline block")
+            position = 0
+            previous = b''
+            decoded = set()
+            while position < len(raw):
+                prefix, suffix = raw[position:position + 2]
+                position += 2
+                if prefix > len(previous) or position + suffix > len(raw):
+                    raise ValueError("Invalid outline record")
+                previous = previous[:prefix] + raw[position:position + suffix]
+                position += suffix
+                decoded.add(previous)
+            self.cached_keys = decoded
+            self.cached_index = index
+        return key in self.cached_keys
+
+
 def pad4(data):
     return data + b'\x00' * ((-len(data)) % 4)
 
@@ -934,6 +996,8 @@ def verify_blobs(left_path, right_path, dict_maps, raw_entries, dicts_mask):
     disp_sec, _ = section(lsecs, SEC_DISP)
     memb_sec, _ = section(lsecs, SEC_MEMBERSHIP)
     fp_sec, _ = section(lsecs, SEC_FP)
+    keys_sec, key_blocks = section(lsecs, SEC_KEYS)
+    exact_keys = ExactKeyTable(keys_sec, key_blocks)
     lconf_sec, lconf_count = section(lsecs, SEC_CONFLICTS)
     lvalidx_sec, lvalidx_start = section(lsecs, SEC_VALIDX)
     strdir_sec, strdir_blocks = section(rsecs, SEC_STRDIR)
@@ -1011,6 +1075,8 @@ def verify_blobs(left_path, right_path, dict_maps, raw_entries, dicts_mask):
             decoded = None
             if not (0 <= slot < n):
                 ok = False
+            elif not exact_keys.contains(kb):
+                ok = False
             elif int(fp_read[i]) != int(fp_expect[i]):
                 ok = False
             elif not (int(memb_read[i]) & (1 << dict_id)):
@@ -1074,9 +1140,10 @@ def verify_blobs(left_path, right_path, dict_maps, raw_entries, dicts_mask):
         if int(pfp_read[i]) == int(pfp[i]):
             fp_pass += 1
             a = active_dicts[i % len(active_dicts)]
-            if int(pmemb[i]) & (1 << a):
+            if int(pmemb[i]) & (1 << a) and exact_keys.contains(probes[i]):
                 accepts += 1
 
+    failures += accepts
     return {
         'entries_checked': entries_checked,
         'failures': failures,
@@ -1205,6 +1272,7 @@ def main():
     disp_sec = build_disp_section(disp, bucket_count)
     memb_sec = pad4(pack_lsb(memb_slot, 2))
     fp_sec = pad4(pack_lsb(fp_slot, FP_BITS))
+    keys_sec, key_blocks = build_key_section(keys)
     conf_sec = b''.join((slot | (sid << 18)).to_bytes(5, 'little')
                         for slot, sid in conflicts)
     strdir_sec, strings_sec, block_count, raw_fc_bytes = \
@@ -1223,7 +1291,7 @@ def main():
 
     def left_size(k):
         return blob_total_size([len(disp_sec), len(memb_sec), len(fp_sec),
-                                len(conf_sec), validx_len_bytes(k)])
+                                len(conf_sec), validx_len_bytes(k), len(keys_sec)])
 
     if right_size(n) > args.right_size:
         print(f"FATAL: right blob without any VALIDX is {right_size(n)} bytes "
@@ -1272,6 +1340,7 @@ def main():
         (SEC_FP, fp_sec, 0),
         (SEC_CONFLICTS, conf_sec, conflict_count),
         (SEC_VALIDX, validx_left, 0),
+        (SEC_KEYS, keys_sec, key_blocks),
     ]
     right_sections = [
         (SEC_STRDIR, strdir_sec, block_count),

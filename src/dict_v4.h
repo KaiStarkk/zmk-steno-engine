@@ -30,7 +30,7 @@
 #include <stddef.h>
 
 #define DICT_V4_MAGIC   0x344E5453u /* "STN4" */
-#define DICT_V4_VERSION 4
+#define DICT_V4_VERSION 5
 
 /* Section types (FORMAT_V4.md section 4) */
 #define DICT_V4_SEC_DISP       1
@@ -40,6 +40,8 @@
 #define DICT_V4_SEC_FP         5
 #define DICT_V4_SEC_STRDIR     6
 #define DICT_V4_SEC_STRINGS    7
+#define DICT_V4_SEC_KEYS       8
+#define DICT_V4_KEY_BLOCK_BYTES 4096
 
 /* Source dictionary ids */
 #define DICT_V4_DICT_PLOVER  0
@@ -125,6 +127,11 @@ struct dict_v4 {
     /* CONFLICTS: sorted 5-byte records */
     const uint8_t *conflicts;
     uint32_t       conflict_count;
+
+    /* Exact outline membership (central only). */
+    const uint8_t *keys;
+    uint32_t keys_len;
+    uint32_t key_block_count;
 
     /* String table */
     const uint8_t *strdir_entries;   /* {u32 comp_off; u32 first_string_id}[] */

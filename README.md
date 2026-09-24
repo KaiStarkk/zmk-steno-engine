@@ -1,9 +1,15 @@
 # zmk-steno-engine
 
+This fork adds exact outline membership verification to prevent hash collisions
+from producing translations or retracing previous text. It also fixes 48-bit
+Bluetooth UUID encoding and conditional compilation of unused helpers.
+See [the binary format change](docs/FORMAT_V4.md). The Sweep configuration
+uses Lapwing only; both halves must be rebuilt together.
+
 Clean-room stenography engine for [ZMK Firmware](https://zmk.dev).
-Carries the **full Plover main dictionary AND the full Lapwing base
-dictionary — 262,309 entries, zero trimming — on a pair of nRF52840
-keyboard halves** using the v4 "union split-section" format
+The full Lapwing base dictionary is verified to fit on a pair of nRF52840
+keyboard halves with exact outline verification. Plover and combined-dictionary
+builds remain subject to the configured per-half flash budgets.
 
 **Status:** working end to end on real hardware (corne, 2x nice!nano v2).
 Translations, multi-stroke longest-match with retrace, number strokes,
